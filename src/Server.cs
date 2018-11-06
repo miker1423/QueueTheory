@@ -14,32 +14,40 @@ namespace TcpServer
     public class Server
     {
         private readonly ConcurrentQueue<Request> clients = new ConcurrentQueue<Request>();
-        private readonly TcpListener listener = new TcpListener(IPAddress.Loopback, 8001);
-        private readonly List<Task> worker = new List<Task>();
+        private readonly TcpListener listener = new TcpListener(IPAddress.Any, 8001);
+        private readonly List<Thread> worker = new List<Thread>();
         private readonly Encoding encoder = Encoding.UTF8;
         private CancellationToken token;
         private CancellationTokenSource tokenSource;
         private ServerStatus status = new ServerStatus();
-        private Task monitor;
+        private Thread monitor;
+        private DateTime lastReceived = DateTime.Now;
         public event EventHandler<ServerStatus> DataChanged;
 
-        public Task Start(int workers, bool autoscale, int threshold)
+        public Task Start(int workers, bool autoscale, int threshold, int maxWorkers)
         {
             tokenSource = new CancellationTokenSource();
             token = tokenSource.Token;
 
             if(autoscale)
-                monitor = Task.Factory.StartNew(() => {
-                    if(clients.Count > threshold)
+            {
+                monitor = new Thread(() => {
+                    while(!token.IsCancellationRequested)
                     {
-                        worker.Add(Task.Factory.StartNew(() => Serve(token)));
-                        lock (status)
+                        if(clients.Count > threshold && worker.Count < maxWorkers)
                         {
-                            status.Workers++;
-                            DataChanged?.Invoke(this, status);
+                            worker.Add(new Thread(async () => await Serve(token)));
+                            worker[worker.Count - 1].Start();
+                            lock (status)
+                            {
+                                status.Workers++;
+                                DataChanged?.Invoke(this, status);
+                            }
                         }
                     }
                 });
+                monitor.Start();
+            }
 
             BuildWorkers(workers, autoscale, token);
             Console.WriteLine("Start now!");
@@ -52,11 +60,14 @@ namespace TcpServer
                     var client = await listener.AcceptTcpClientAsync();
                     var request = new Request{ Client = client, ReceivedTime = DateTime.Now };
                     clients.Enqueue(request);
+                    var diff = DateTime.Now.Subtract(lastReceived);
                     lock(status) {
                         status.ReceivedClients++;
+                        status.AvarageArrivalTime = CalculateAvarage(status.AvarageArrivalTime, status.ReceivedClients, diff);
                         status.PendingRequests = clients.Count;
                         DataChanged?.Invoke(this, status);
                     }
+                    lastReceived = DateTime.Now;
                 }
             });
         }
@@ -71,7 +82,10 @@ namespace TcpServer
         private void BuildWorkers(int workers, bool autoscale, CancellationToken token)
         {
             for (int i = 0; i < workers; i++)
-                worker.Add(Task.Factory.StartNew(() => Serve(token)));
+            {
+                worker.Add(new Thread(async () => await Serve(token)));
+                worker[i].Start();
+            }
             lock (status)
             {
                 status.Workers = worker.Count;
@@ -86,15 +100,27 @@ namespace TcpServer
             {
                 if(clients.TryDequeue(out var client))
                 {
+                    await Task.Delay(TimeSpan.FromSeconds(1));
                     var stream = client.Client.GetStream();
                     await stream.WriteAsync(helloBuffer, 0, helloBuffer.Length, token);
+                    var waitTime = DateTime.Now.Subtract(client.ReceivedTime);
                     lock (status)
-                    {  
+                    {
+                        status.PendingRequests = clients.Count;
                         status.ServedClients++;
+                        status.AvarageWaitTime = CalculateAvarage(status.AvarageWaitTime, status.ServedClients, waitTime);
+                        status.RPS = status.ServedClients / status.AvarageWaitTime.TotalSeconds;
                         DataChanged?.Invoke(this, status);
                     }
                 }
             }
+        }
+
+        private TimeSpan CalculateAvarage(TimeSpan prevAvarage, int count, TimeSpan newTime)
+        {
+            var prevSum = prevAvarage.TotalMilliseconds * (count - 1);
+            prevSum += newTime.TotalMilliseconds;
+            return TimeSpan.FromMilliseconds(prevSum / count);
         }
     }
 }

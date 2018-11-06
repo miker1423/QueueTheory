@@ -19,12 +19,10 @@ namespace TcpServer
             Console.CancelKeyPress += (sender, arg) => {
                 server.Stop();
             };
-            await server.Start(2, true, 5);
+            await server.Start(2, true, 5, 10);
+            Thread.Sleep(Timeout.Infinite);
         }
 
-        static void DataReceived(object sender, ServerStatus status)
-        {
-            Console.WriteLine(status);
-        }
+        static void DataReceived(object sender, ServerStatus status) => Console.WriteLine(status);
     }
 }
