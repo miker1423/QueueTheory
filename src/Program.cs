@@ -12,15 +12,19 @@ namespace TcpServer
 {
     class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             var server = new Server();
             server.DataChanged += DataReceived;
+            Console.CancelKeyPress += (sender, arg) => {
+                server.Stop();
+            };
+            await server.Start(2, true, 5);
         }
 
         static void DataReceived(object sender, ServerStatus status)
         {
-            
+            Console.WriteLine(status);
         }
     }
 }
